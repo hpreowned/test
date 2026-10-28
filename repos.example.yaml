@@ -1,0 +1,91 @@
+# repos.yaml — the map the multi-repo-workflow skill reads before doing anything.
+#
+# Keep it at the workspace root (the parent folder all repos are checked out under),
+# or point MULTI_REPO_CONFIG at it. Generate a draft with references/inventory.md,
+# then review it: the skill treats this file as truth and never guesses a purpose
+# or dependency that isn't written here.
+#
+# Keys starting with "_" (for example _confidence, _evidence) are review notes and
+# are ignored by the skill and by scripts/plan.py.
+
+version: 1
+workspace_root: ~/work/org            # parent folder; each repo's `path` is relative to it
+
+defaults:
+  default_branch: main
+  branch_pattern: "{type}/{ticket}-{slug}"           # feature/PLAT-1234-rate-limit-headers
+  commit_pattern: "{type}({scope}): {summary} [{ticket}]"
+  ticket_pattern: "[A-Z][A-Z0-9]+-\\d+"              # how to recognise a ticket id in a request
+  pr_template: null                                   # path (relative to each repo) used when a repo has none
+  pr_draft_downstream: true                           # open downstream PRs as drafts until upstream merges
+
+repos:
+  - name: platform-infra
+    path: platform-infra
+    remote: https://github.com/org/platform-infra
+    purpose: Terraform and Bicep for the shared Azure platform — AKS, APIM gateway, networking, Key Vault
+    kind: infrastructure                              # infrastructure | api | ui | library | data | pipeline | docs | tooling
+    stack: [terraform, bicep, azure]
+    owners: ["@org/ccoe"]
+    depends_on: []                                    # repo names from this file; dependencies land first
+    provides: [aks-cluster, apim-gateway, shared-keyvault]
+    consumes: []
+    verify:
+      - terraform fmt -check -recursive
+      - terraform validate
+    pr:
+      reviewers: ["@org/ccoe-reviewers"]
+      labels: [infra]
+      template: .github/PULL_REQUEST_TEMPLATE.md
+    notes: Attach `terraform plan` output to every PR. Changes here merge before dependent repos.
+
+  - name: shared-lib
+    path: libs/shared-lib                             # nested layouts are fine
+    remote: https://github.com/org/shared-lib
+    purpose: Shared Python package (auth helpers, logging, config) published to the internal feed
+    kind: library
+    stack: [python]
+    owners: ["@org/platform-backend"]
+    depends_on: []
+    provides: ["org-shared (pypi)"]
+    consumes: []
+    verify: [pytest -q]
+    pr:
+      reviewers: ["@org/platform-backend"]
+      labels: [library]
+    notes: Bump the version and publish before a consumer can pick up a change.
+
+  - name: core-api
+    path: core-api
+    remote: https://github.com/org/core-api
+    purpose: FastAPI service exposing the orders and customers endpoints behind APIM
+    kind: api
+    stack: [python, fastapi, docker, helm]
+    owners: ["@org/platform-backend"]
+    depends_on: [platform-infra, shared-lib]
+    provides: [orders-api, customers-api]
+    consumes: [apim-gateway, shared-keyvault, "org-shared (pypi)"]
+    verify:
+      - ruff check .
+      - pytest -q
+    pr:
+      reviewers: ["@org/platform-backend"]
+      labels: [api]
+    notes: openapi/spec.yaml is the contract web-ui generates its client from; keep changes backward compatible.
+
+  - name: web-ui
+    path: web-ui
+    remote: https://github.com/org/web-ui
+    purpose: React front end for the operations portal
+    kind: ui
+    stack: [typescript, react, vite]
+    owners: ["@org/portal-frontend"]
+    depends_on: [core-api]
+    provides: []
+    consumes: [orders-api, customers-api]
+    verify:
+      - npm run lint
+      - npm test -- --run
+    pr:
+      reviewers: ["@org/portal-frontend"]
+      labels: [ui]
